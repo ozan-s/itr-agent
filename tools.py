@@ -108,7 +108,7 @@ class ITRProcessor:
             print(f"📊 Loading Excel file: {self.excel_file}...")
             start_time = time.time()
             
-            required_columns = ["SubSystem", "ITR", "End Cert."]
+            required_columns = ["SubSystem", "ITR", "End Cert.", "SubSystem Descr."]
             
             df = pd.read_excel(
                 self.excel_file,
@@ -116,7 +116,8 @@ class ITRProcessor:
                 dtype={
                     "SubSystem": "string",
                     "ITR": "string", 
-                    "End Cert.": "string"
+                    "End Cert.": "string",
+                    "SubSystem Descr.": "string"
                 },
                 engine="openpyxl",
                 na_filter=True,
@@ -128,6 +129,7 @@ class ITRProcessor:
             df["SubSystem"] = df["SubSystem"].astype(str).str.strip()
             df["ITR"] = df["ITR"].astype(str).str.strip()
             df["End Cert."] = df["End Cert."].fillna("").astype(str).str.strip()
+            df["SubSystem Descr."] = df["SubSystem Descr."].fillna("").astype(str).str.strip()
             df = df.dropna(subset=["SubSystem", "ITR"], how="all")
             
             self.data = df
@@ -149,7 +151,7 @@ class ITRProcessor:
         else:
             return "unknown"
     
-    def query_comprehensive_subsystem_data(self, subsystem: str) -> Dict:
+    def get_subsystem_data(self, subsystem: str) -> Dict:
         """
         THE comprehensive tool - returns all ITR data for a subsystem.
         LLM can extract whatever the user asked for from this rich response.
@@ -241,7 +243,8 @@ class ITRProcessor:
     
     def search_subsystems(self, pattern: str = None, limit: int = 20) -> Dict:
         """
-        Smart subsystem discovery and search.
+        Smart subsystem discovery and search with description support.
+        Searches both subsystem IDs and descriptions for comprehensive results.
         """
         if self.data is None or self.data.empty:
             return {
@@ -249,34 +252,58 @@ class ITRProcessor:
                 "guidance": "Try reloading data with manage_cache tool"
             }
         
-        all_subsystems = sorted(self.data["SubSystem"].unique())
+        # Get unique subsystems with their descriptions
+        unique_subsystems = self.data.groupby('SubSystem')['SubSystem Descr.'].first().reset_index()
+        all_subsystems = sorted(unique_subsystems['SubSystem'].tolist())
         
         if pattern:
-            # Case-insensitive partial matching
+            # Case-insensitive partial matching on both ID and description
             pattern_lower = pattern.lower()
-            matching = [s for s in all_subsystems if pattern_lower in s.lower()]
+            matching_subsystems = []
+            
+            for _, row in unique_subsystems.iterrows():
+                subsystem_id = row['SubSystem']
+                description = str(row['SubSystem Descr.']) if pd.notna(row['SubSystem Descr.']) else ""
+                
+                # Search in both ID and description
+                if (pattern_lower in subsystem_id.lower() or 
+                    pattern_lower in description.lower()):
+                    matching_subsystems.append({
+                        "id": subsystem_id,
+                        "description": description,
+                        "match_type": "id" if pattern_lower in subsystem_id.lower() else "description"
+                    })
             
             result = {
                 "pattern": pattern,
-                "found": len(matching),
+                "found": len(matching_subsystems),
                 "total_available": len(all_subsystems),
-                "matches": matching[:limit]
+                "matches": matching_subsystems[:limit]
             }
             
-            if len(matching) > limit:
-                result["truncated"] = f"Showing first {limit} of {len(matching)} matches"
+            if len(matching_subsystems) > limit:
+                result["truncated"] = f"Showing first {limit} of {len(matching_subsystems)} matches"
             
-            if matching:
-                result["guidance"] = f"Found {len(matching)} subsystems matching '{pattern}'. Use query_subsystem_itrs() to get ITR details for any subsystem"
+            if matching_subsystems:
+                id_matches = sum(1 for m in matching_subsystems if m["match_type"] == "id")
+                desc_matches = len(matching_subsystems) - id_matches
+                result["guidance"] = f"Found {len(matching_subsystems)} subsystems matching '{pattern}' ({id_matches} by ID, {desc_matches} by description). Use query_subsystem_itrs() to get ITR details for any subsystem"
             else:
-                result["guidance"] = f"No subsystems found matching '{pattern}'. Try a shorter or different pattern"
+                result["guidance"] = f"No subsystems found matching '{pattern}' in either ID or description. Try a different pattern"
             
         else:
-            # Return overview of all subsystems
+            # Return overview of all subsystems with sample descriptions
+            sample_with_desc = []
+            for _, row in unique_subsystems.head(limit).iterrows():
+                sample_with_desc.append({
+                    "id": row['SubSystem'],
+                    "description": str(row['SubSystem Descr.']) if pd.notna(row['SubSystem Descr.']) else "No description"
+                })
+            
             result = {
                 "total_subsystems": len(all_subsystems),
-                "sample": all_subsystems[:limit],
-                "guidance": f"Found {len(all_subsystems)} total subsystems. Use search pattern to narrow down or query_subsystem_itrs() for specific subsystem details"
+                "sample": sample_with_desc,
+                "guidance": f"Found {len(all_subsystems)} total subsystems. Use search pattern to find by ID or description, or query_subsystem_itrs() for specific subsystem details"
             }
             
             if len(all_subsystems) > limit:
@@ -374,7 +401,7 @@ def query_subsystem_itrs(subsystem: str) -> str:
         subsystem: The SubSystem ID to query (e.g., "7-1100-P-01-05")
     """
     processor = get_processor()
-    result = processor.query_comprehensive_subsystem_data(subsystem)
+    result = processor.get_subsystem_data(subsystem)
     
     if "error" in result:
         return f"❌ Error: {result['error']}\n💡 {result['guidance']}"
@@ -405,13 +432,13 @@ def query_subsystem_itrs(subsystem: str) -> str:
 @tool
 def search_subsystems(pattern: str = None) -> str:
     """
-    Find subsystems by name pattern or get overview of available subsystems. Use when user wants to
-    find subsystems containing specific text, discover available subsystems, or get list of subsystems to query.
+    Find subsystems by ID pattern or description content. Use when user wants to find subsystems
+    containing specific text in either the subsystem ID or description (e.g., "nitrogen", "pump", "valve").
     
-    Returns matching subsystem IDs with guidance for next steps.
+    Returns matching subsystem IDs with descriptions and guidance for next steps.
     
     Args:
-        pattern: Optional pattern for filtering (e.g., "7-1100", "P-01"). Leave empty to see all available subsystems.
+        pattern: Optional pattern for filtering by ID or description (e.g., "7-1100", "nitrogen", "pump"). Leave empty to see all available subsystems.
     """
     processor = get_processor()
     result = processor.search_subsystems(pattern)
@@ -425,8 +452,15 @@ def search_subsystems(pattern: str = None) -> str:
         
         if result.get('matches'):
             response += "📋 Matching Subsystems:\n"
-            for subsystem in result['matches']:
-                response += f"• {subsystem}\n"
+            for match in result['matches']:
+                if isinstance(match, dict):
+                    match_indicator = "🆔" if match['match_type'] == 'id' else "📝"
+                    response += f"• {match_indicator} {match['id']}\n"
+                    if match['description']:
+                        response += f"   Description: {match['description']}\n"
+                else:
+                    # Backward compatibility for old format
+                    response += f"• {match}\n"
             
             if result.get('truncated'):
                 response += f"\n⚠️ {result['truncated']}"
@@ -436,8 +470,14 @@ def search_subsystems(pattern: str = None) -> str:
         response += f"Total Available: {result['total_subsystems']}\n\n"
         response += "📋 Sample Subsystems:\n"
         
-        for subsystem in result['sample']:
-            response += f"• {subsystem}\n"
+        for item in result['sample']:
+            if isinstance(item, dict):
+                response += f"• {item['id']}\n"
+                if item['description'] and item['description'] != "No description":
+                    response += f"   Description: {item['description']}\n"
+            else:
+                # Backward compatibility for old format
+                response += f"• {item}\n"
         
         if result.get('truncated'):
             response += f"\n⚠️ {result['truncated']}"
