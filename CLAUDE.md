@@ -162,10 +162,71 @@ Required columns: `System`, `System Descr.`, `SubSystem`, `SubSystem Descr.`, `I
 - **Solution**: Heavy operations (deduplication) at load time, cache results
 - **Benefit**: All subsequent operations work on clean data, no repeated processing
 
+## Requirement Clarification Protocol
+
+### STOP and Ask Before Implementing
+
+When encountering ambiguous requirements, **ALWAYS** clarify these categories:
+
+#### 1. **Data Behavior Ambiguity**
+- **"Remove duplicates"** → Ask: "Delete duplicate rows OR count unique values?"
+- **"Handle missing data"** → Ask: "Skip rows, use defaults, or error out?"
+- **"Process Excel file"** → Ask: "Transform data in-place or preserve original?"
+
+#### 2. **Architecture Scope Ambiguity**  
+- **"Add new feature"** → Ask: "Minimal implementation or production-ready with all edge cases?"
+- **"Support X"** → Ask: "Current files only or backward compatibility needed?"
+- **"Improve performance"** → Ask: "Optimize for speed, memory, or maintainability?"
+
+#### 3. **Implementation Strategy Ambiguity**
+- **"Make it work"** → Ask: "Quick fix or proper solution following existing patterns?"
+- **"Add validation"** → Ask: "Fail fast or graceful degradation?"
+- **"Handle errors"** → Ask: "Log and continue or stop processing?"
+
+### Clarification Question Templates
+
+Use these exact phrases to avoid assumptions:
+
+**For Data Operations:**
+- "When you say [ambiguous term], do you mean [option A] or [option B]?"
+- "Should this [preserve/modify/delete] the original data?"
+- "How should we handle [specific edge case] - [option A], [option B], or something else?"
+
+**For Architecture Decisions:**
+- "Do you need this to work with existing [files/data/systems] or can we require [new format]?"
+- "Should I implement the minimal version first, or the full solution with all edge cases?"
+- "Are you optimizing for [speed/memory/maintainability/simplicity]?"
+
+**For Scope Boundaries:**
+- "This could be implemented as [simple approach] or [comprehensive approach]. Which do you prefer?"
+- "Should I follow the existing pattern of [X] or create a new approach?"
+
+### Anti-Pattern Prevention
+
+**NEVER assume:**
+- ❌ "Deduplication" means row deletion (could mean unique counting)
+- ❌ "Support new format" means backward compatibility needed
+- ❌ "Make it work" means add all possible edge case handling
+- ❌ "Handle errors" means implement complex recovery logic
+
+**ALWAYS clarify:**
+- ✅ Exact data transformation behavior expected
+- ✅ Compatibility requirements with existing systems
+- ✅ Implementation scope (minimal vs comprehensive)
+- ✅ Error handling strategy (fail fast vs graceful)
+
+### When in Doubt, Ask Examples
+
+**Template**: "Could you give me an example? If I have [specific input], what exactly should happen to produce [expected output]?"
+
+This prevents architectural over-engineering and ensures the solution matches actual needs.
+
 ## Key Development Lessons
 
 **Tool Parameter Exposure**: When creating tools for LLMs, ensure ALL useful parameters are exposed through the tool decorator. Internal method parameters that aren't exposed to the LLM create functional limitations where the AI cannot fully control the tool's behavior, leading to incomplete or suboptimal results.
 
 **TDD for Data Processing**: Test-driven development is especially critical for data processing features where edge cases (missing values, duplicates, malformed data) are common and can cause silent failures in production.
+
+**Clarification Over Assumptions**: When requirements have multiple valid interpretations, asking one clarifying question saves hours of implementing the wrong solution. Always clarify data behavior, architecture scope, and implementation strategy before coding.
 
 This codebase represents a mature example of AI-first architecture design, optimized specifically for conversational AI agents rather than traditional software patterns.
