@@ -347,53 +347,53 @@ class TestDeduplication:
         key2 = processor._create_composite_key(test_data.iloc[2])
         assert key2 == "|R003|T003|F003", f"Expected '|R003|T003|F003', got '{key2}'"
         
-    def test_deduplication_removes_duplicates(self):
-        """Test that _deduplicate_data removes rows with same composite key."""
-        processor = ITRProcessor("tests/test_200_rows.xlsx")
-        
-        # Create test data with intentional duplicates
+    def test_counting_ignores_duplicates(self):
+        """Test that counting logic counts unique composite keys, not all rows."""
+        # Create test Excel file with duplicates
         test_data = pd.DataFrame([
-            {"System": "7-1100-P-01", "SubSystem": "7-1100-P-01-05", "ITR": "ITR-A", "ITEM": "P001", "Rule": "R001", "Test": "T001", "Form": "F001", "End Cert.": "Y"},
-            {"System": "7-1100-P-01", "SubSystem": "7-1100-P-01-05", "ITR": "ITR-B", "ITEM": "P001", "Rule": "R001", "Test": "T001", "Form": "F001", "End Cert.": "N"},  # Duplicate key
-            {"System": "7-1200-P-02", "SubSystem": "7-1200-P-02-01", "ITR": "ITR-A", "ITEM": "P002", "Rule": "R002", "Test": "T002", "Form": "F002", "End Cert.": "Y"},
-            {"System": "7-1200-P-02", "SubSystem": "7-1200-P-02-01", "ITR": "ITR-C", "ITEM": "P003", "Rule": "R003", "Test": "T003", "Form": "F003", "End Cert.": ""},
+            {"System": "7-1100-P-01", "System Descr.": "Test System", "SubSystem": "7-1100-P-01-05", 
+             "SubSystem Descr.": "Test SubSystem", "ITR": "ITR-A", "ITEM": "P001", "Rule": "R001", "Test": "T001", "Form": "F001", "End Cert.": "Y"},
+            {"System": "7-1100-P-01", "System Descr.": "Test System", "SubSystem": "7-1100-P-01-05", 
+             "SubSystem Descr.": "Test SubSystem", "ITR": "ITR-B", "ITEM": "P001", "Rule": "R001", "Test": "T001", "Form": "F001", "End Cert.": "N"},  # Duplicate key
+            {"System": "7-1100-P-01", "System Descr.": "Test System", "SubSystem": "7-1100-P-01-05", 
+             "SubSystem Descr.": "Test SubSystem", "ITR": "ITR-C", "ITEM": "P002", "Rule": "R002", "Test": "T002", "Form": "F002", "End Cert.": ""},
         ])
         
-        # This should fail initially - method doesn't exist yet
-        deduplicated = processor._deduplicate_data(test_data)
+        test_file = "tests/test_counting_dupes.xlsx"
+        test_data.to_excel(test_file, index=False)
         
-        # Should have 3 unique rows (first duplicate removed)
-        assert len(deduplicated) == 3, f"Expected 3 unique rows after deduplication, got {len(deduplicated)}"
+        try:
+            processor = ITRProcessor(test_file)
+            
+            # Should load all 3 rows (no deletion)
+            assert len(processor.data) == 3, f"Expected 3 rows loaded, got {len(processor.data)}"
+            
+            # But counting should show only 2 unique ITRs
+            result = processor.get_subsystem_data("7-1100-P-01-05")
+            assert result["overall"]["total"] == 2, f"Expected 2 unique ITRs counted, got {result['overall']['total']}"
+            
+        finally:
+            # Clean up test file
+            import os
+            if os.path.exists(test_file):
+                os.remove(test_file)
         
-        # Check that the first occurrence is kept
-        first_row = deduplicated[deduplicated['ITEM'] == 'P001']
-        assert len(first_row) == 1, "Should keep only one row with duplicate key"
-        assert first_row.iloc[0]['ITR'] == 'ITR-A', "Should keep the first occurrence"
-        
-    def test_deduplication_handles_missing_values(self):
-        """Test deduplication handles missing/null values in key fields gracefully."""
+    def test_composite_key_handles_missing_values(self):
+        """Test composite key generation handles missing/null values in key fields gracefully."""
         processor = ITRProcessor("tests/test_200_rows.xlsx")
         
-        # Test data with missing values
-        test_data = pd.DataFrame([
-            {"System": "7-1100-P-01", "SubSystem": "7-1100-P-01-05", "ITR": "ITR-A", "ITEM": "P001", "Rule": "R001", "Test": "T001", "Form": "F001", "End Cert.": "Y"},
-            {"System": "7-1100-P-01", "SubSystem": "7-1100-P-01-05", "ITR": "ITR-B", "ITEM": None, "Rule": "R002", "Test": "T002", "Form": "F002", "End Cert.": "N"},
-            {"System": "7-1200-P-02", "SubSystem": "7-1200-P-02-01", "ITR": "ITR-A", "ITEM": "", "Rule": "", "Test": "", "Form": "", "End Cert.": "Y"},
-            {"System": "7-1200-P-02", "SubSystem": "7-1200-P-02-01", "ITR": "ITR-C", "ITEM": "", "Rule": "", "Test": "", "Form": "", "End Cert.": ""},  # Duplicate empty key
-        ])
+        # Test composite key generation with missing values
+        test_row_1 = {"ITEM": "P001", "Rule": "R001", "Test": "T001", "Form": "F001"}
+        test_row_2 = {"ITEM": None, "Rule": "R002", "Test": "T002", "Form": "F002"}
+        test_row_3 = {"ITEM": "", "Rule": "", "Test": "", "Form": ""}
         
-        # This should fail initially - method doesn't exist yet
-        deduplicated = processor._deduplicate_data(test_data)
+        key1 = processor._create_composite_key(test_row_1)
+        key2 = processor._create_composite_key(test_row_2)
+        key3 = processor._create_composite_key(test_row_3)
         
-        # Should handle missing values and still deduplicate
-        assert len(deduplicated) == 3, f"Expected 3 unique rows after deduplication with missing values, got {len(deduplicated)}"
-        
-        # Check that empty keys are handled properly
-        empty_key_rows = deduplicated[(deduplicated['ITEM'].fillna('') == '') & 
-                                     (deduplicated['Rule'].fillna('') == '') & 
-                                     (deduplicated['Test'].fillna('') == '') & 
-                                     (deduplicated['Form'].fillna('') == '')]
-        assert len(empty_key_rows) == 1, "Should keep only one row with empty composite key"
+        assert key1 == "P001|R001|T001|F001", f"Expected 'P001|R001|T001|F001', got '{key1}'"
+        assert key2 == "|R002|T002|F002", f"Expected '|R002|T002|F002', got '{key2}'"
+        assert key3 == "|||", f"Expected '|||', got '{key3}'"
 
 
 class TestNewExcelColumns:

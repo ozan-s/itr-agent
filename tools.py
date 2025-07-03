@@ -185,12 +185,6 @@ class ITRProcessor:
             # Remove rows with missing essential data
             df = df.dropna(subset=["System", "SubSystem", "ITR"], how="any")
             
-            # Apply deduplication (always, since all columns are required)
-            original_count = len(df)
-            df = self._deduplicate_data(df)
-            dedup_count = len(df)
-            print(f"🔍 Deduplication: {original_count} → {dedup_count} records ({original_count - dedup_count} duplicates removed)")
-            
             self.data = df
             print(f"✅ Loaded {len(self.data)} ITR records in {load_time:.2f}s")
             self._save_cache(self.data)
@@ -232,23 +226,6 @@ class ITRProcessor:
         
         return f"{item}|{rule}|{test}|{form}"
     
-    def _deduplicate_data(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Remove duplicate rows based on composite key of ITEM+Rule+Test+Form."""
-        if data.empty:
-            return data
-        
-        # Create composite key for each row
-        data = data.copy()
-        data["_composite_key"] = data.apply(self._create_composite_key, axis=1)
-        
-        # Keep first occurrence of each unique key
-        deduplicated = data.drop_duplicates(subset=["_composite_key"], keep="first")
-        
-        # Remove the temporary composite key column
-        deduplicated = deduplicated.drop(columns=["_composite_key"])
-        
-        return deduplicated.reset_index(drop=True)
-    
     def get_subsystem_data(self, subsystem: str) -> Dict:
         """
         THE comprehensive tool - returns all ITR data for a subsystem.
@@ -270,20 +247,27 @@ class ITRProcessor:
                 "subsystem": subsystem
             }
         
-        # Calculate overall statistics
-        total_itrs = len(subsystem_data)
+        # Create composite keys for deduplication counting
+        subsystem_data = subsystem_data.copy()
+        subsystem_data["_composite_key"] = subsystem_data.apply(self._create_composite_key, axis=1)
+        
+        # Get unique composite keys and their first occurrence (for status)
+        unique_data = subsystem_data.drop_duplicates(subset=["_composite_key"], keep="first")
+        
+        # Calculate overall statistics based on unique items
+        total_itrs = len(unique_data)
         status_counts = {"Not Started": 0, "Ongoing": 0, "Completed": 0, "Unknown": 0}
         
-        for _, row in subsystem_data.iterrows():
+        for _, row in unique_data.iterrows():
             status = self.get_itr_status(row["End Cert."])
             status_counts[status] += 1
         
         open_itrs = status_counts["Not Started"] + status_counts["Ongoing"]
         
-        # Calculate by-type breakdown
+        # Calculate by-type breakdown based on unique items
         by_type = {}
         for itr_type in ["ITR-A", "ITR-B", "ITR-C"]:
-            type_data = subsystem_data[subsystem_data["ITR"] == itr_type]
+            type_data = unique_data[unique_data["ITR"] == itr_type]
             type_status_counts = {"Not Started": 0, "Ongoing": 0, "Completed": 0, "Unknown": 0}
             
             for _, row in type_data.iterrows():
