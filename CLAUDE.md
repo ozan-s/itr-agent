@@ -134,8 +134,7 @@ The caching system is performance-critical:
 - Both Excel files should have identical structure
 
 ### Excel Structure
-**Core columns**: `System`, `System Descr.`, `SubSystem`, `SubSystem Descr.`, `ITR`, `End Cert.`  
-**Deduplication columns**: `ITEM`, `Rule`, `Test`, `Form` (optional, with backward compatibility)
+Required columns: `System`, `System Descr.`, `SubSystem`, `SubSystem Descr.`, `ITR`, `End Cert.`, `ITEM`, `Rule`, `Test`, `Form`
 
 **Hierarchy**: System → SubSystem → ITR
 - Example: System "7-1100-P-01" contains SubSystem "7-1100-P-01-05"
@@ -151,12 +150,7 @@ The caching system is performance-critical:
 - Invalid subsystem queries → helpful error messages with suggestions
 - OpenAI API issues → clear guidance for API key setup
 
-## Excel Schema Evolution Patterns
-
-### Backward Compatibility Pattern
-- **Problem**: Adding new columns to existing Excel schema without breaking old files
-- **Solution**: Optional column detection with graceful degradation
-- **Implementation**: Check available columns first, load only what exists, provide defaults for missing
+## Data Processing Patterns
 
 ### Composite Key Deduplication Pattern  
 - **Problem**: Remove duplicates based on multiple fields without losing data integrity

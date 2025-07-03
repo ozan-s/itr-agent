@@ -440,17 +440,37 @@ class TestNewExcelColumns:
             if os.path.exists(test_file):
                 os.remove(test_file)
     
-    def test_backward_compatibility_without_new_columns(self):
-        """Test that ITRProcessor still works with Excel files missing new columns."""
-        # This should pass - testing that old Excel format still works
-        processor = ITRProcessor("tests/test_200_rows.xlsx")
+    def test_all_required_columns_present(self):
+        """Test that ITRProcessor requires all 10 columns including deduplication fields."""
+        # Create test Excel file with all required columns
+        test_data = pd.DataFrame([
+            {"System": "7-1100-P-01", "System Descr.": "Pump System 1", "SubSystem": "7-1100-P-01-05", 
+             "SubSystem Descr.": "Primary Pump", "ITR": "ITR-A", "End Cert.": "Y",
+             "ITEM": "P001", "Rule": "R001", "Test": "T001", "Form": "F001"},
+        ])
         
-        # Should load successfully even without new columns
-        assert processor.data is not None, "Should load data even without new columns"
-        assert not processor.data.empty, "Should have data"
+        # Save to test file
+        test_file = "tests/test_all_columns.xlsx"
+        test_data.to_excel(test_file, index=False)
         
-        # Should gracefully handle missing columns (perhaps with default values)
-        # This behavior will be defined in the implementation
+        try:
+            processor = ITRProcessor(test_file)
+            
+            # Should successfully load data
+            assert processor.data is not None, "Data should be loaded"
+            assert not processor.data.empty, "Data should not be empty"
+            assert len(processor.data) == 1, f"Should load 1 row, got {len(processor.data)}"
+            
+            # Should have all required columns
+            required_columns = ["System", "System Descr.", "SubSystem", "SubSystem Descr.", "ITR", "End Cert.", "ITEM", "Rule", "Test", "Form"]
+            for col in required_columns:
+                assert col in processor.data.columns, f"Missing required column: {col}"
+            
+        finally:
+            # Clean up test file
+            import os
+            if os.path.exists(test_file):
+                os.remove(test_file)
 
 
 class TestDeduplicatedCounting:

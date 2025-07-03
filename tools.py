@@ -127,26 +127,15 @@ class ITRProcessor:
             print(f"📊 Loading Excel file: {self.excel_file}...")
             start_time = time.time()
             
-            # Core required columns (must exist)
-            core_required_columns = ["System", "System Descr.", "SubSystem", "ITR", "End Cert.", "SubSystem Descr."]
+            # All required columns (must exist)
+            required_columns = ["System", "System Descr.", "SubSystem", "ITR", "End Cert.", "SubSystem Descr.", 
+                               "ITEM", "Rule", "Test", "Form"]
             
-            # New deduplication columns (optional for backward compatibility)
-            dedup_columns = ["ITEM", "Rule", "Test", "Form"]
-            
-            # Check available columns and determine what to load
+            # Check for missing columns
             all_columns = pd.read_excel(self.excel_file, nrows=0, engine="openpyxl").columns.tolist()
-            
-            # Check for missing core columns
-            missing_core_columns = [col for col in core_required_columns if col not in all_columns]
-            if missing_core_columns:
-                raise ValueError(f"Missing required columns: {missing_core_columns}. Available columns: {all_columns}")
-            
-            # Determine which dedup columns are available
-            available_dedup_columns = [col for col in dedup_columns if col in all_columns]
-            has_dedup_columns = len(available_dedup_columns) > 0
-            
-            # Combine columns to load
-            columns_to_load = core_required_columns + available_dedup_columns
+            missing_columns = [col for col in required_columns if col not in all_columns]
+            if missing_columns:
+                raise ValueError(f"Missing required columns: {missing_columns}. Available columns: {all_columns}")
             
             # Build dtype specification
             dtype_spec = {
@@ -155,16 +144,16 @@ class ITRProcessor:
                 "SubSystem": "string",
                 "ITR": "string", 
                 "End Cert.": "string",
-                "SubSystem Descr.": "string"
+                "SubSystem Descr.": "string",
+                "ITEM": "string",
+                "Rule": "string",
+                "Test": "string",
+                "Form": "string"
             }
-            
-            # Add dtype for available dedup columns
-            for col in available_dedup_columns:
-                dtype_spec[col] = "string"
             
             df = pd.read_excel(
                 self.excel_file,
-                usecols=columns_to_load,
+                usecols=required_columns,
                 dtype=dtype_spec,
                 engine="openpyxl",
                 na_filter=True,
@@ -176,10 +165,10 @@ class ITRProcessor:
             df["System Descr."] = df["System Descr."].fillna("")
             df["End Cert."] = df["End Cert."].fillna("")
             df["SubSystem Descr."] = df["SubSystem Descr."].fillna("")
-            
-            # Clean deduplication columns if they exist
-            for col in available_dedup_columns:
-                df[col] = df[col].fillna("")
+            df["ITEM"] = df["ITEM"].fillna("")
+            df["Rule"] = df["Rule"].fillna("")
+            df["Test"] = df["Test"].fillna("")
+            df["Form"] = df["Form"].fillna("")
             
             # Convert to strings and strip whitespace
             df["System"] = df["System"].astype(str).str.strip()
@@ -188,22 +177,19 @@ class ITRProcessor:
             df["ITR"] = df["ITR"].astype(str).str.strip()
             df["End Cert."] = df["End Cert."].astype(str).str.strip()
             df["SubSystem Descr."] = df["SubSystem Descr."].astype(str).str.strip()
-            
-            # Clean deduplication columns
-            for col in available_dedup_columns:
-                df[col] = df[col].astype(str).str.strip()
+            df["ITEM"] = df["ITEM"].astype(str).str.strip()
+            df["Rule"] = df["Rule"].astype(str).str.strip()
+            df["Test"] = df["Test"].astype(str).str.strip()
+            df["Form"] = df["Form"].astype(str).str.strip()
             
             # Remove rows with missing essential data
             df = df.dropna(subset=["System", "SubSystem", "ITR"], how="any")
             
-            # Apply deduplication if we have the required columns
-            if has_dedup_columns and len(available_dedup_columns) == 4:
-                original_count = len(df)
-                df = self._deduplicate_data(df)
-                dedup_count = len(df)
-                print(f"🔍 Deduplication: {original_count} → {dedup_count} records ({original_count - dedup_count} duplicates removed)")
-            elif has_dedup_columns:
-                print(f"⚠️  Partial deduplication columns found ({available_dedup_columns}). Need all 4 columns (ITEM, Rule, Test, Form) for deduplication.")
+            # Apply deduplication (always, since all columns are required)
+            original_count = len(df)
+            df = self._deduplicate_data(df)
+            dedup_count = len(df)
+            print(f"🔍 Deduplication: {original_count} → {dedup_count} records ({original_count - dedup_count} duplicates removed)")
             
             self.data = df
             print(f"✅ Loaded {len(self.data)} ITR records in {load_time:.2f}s")
