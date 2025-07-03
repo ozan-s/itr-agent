@@ -9,7 +9,8 @@ import os
 from smolagents import CodeAgent, OpenAIServerModel
 from tools import (
     query_subsystem_itrs,
-    search_subsystems, 
+    search_subsystems,
+    search_systems,
     manage_cache
 )
 
@@ -28,11 +29,12 @@ def create_agent():
         api_key=os.environ.get("OPENAI_API_KEY")
     )
     
-    # Create agent with 3 ITR tools
+    # Create agent with 4 ITR tools
     agent = CodeAgent(
         tools=[
             query_subsystem_itrs,
             search_subsystems,
+            search_systems,
             manage_cache
         ],
         model=model,

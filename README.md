@@ -14,7 +14,7 @@ uv sync
 ### Interactive Mode
 Run the ITR processing agent:
 ```bash
-uv run python simple_agent.py
+uv run python agent.py
 ```
 
 ### Test the Tools

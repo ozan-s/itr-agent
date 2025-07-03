@@ -10,6 +10,7 @@ ITR Tools - 3 focused tools for Excel ITR processing.
 import pandas as pd
 import pickle
 import time
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 from smolagents import tool
@@ -44,6 +45,11 @@ class ITRProcessor:
         if not self.cache_file.exists() or not self.cache_info_file.exists():
             return False
         
+        # If Excel file doesn't exist, cache is invalid
+        file_path = Path(self.excel_file)
+        if not file_path.exists():
+            return False
+        
         try:
             with open(self.cache_info_file, 'rb') as f:
                 cache_info = pickle.load(f)
@@ -56,9 +62,13 @@ class ITRProcessor:
             return False
     
     def _save_cache(self, data: pd.DataFrame):
-        """Save DataFrame and metadata to cache."""
+        """Save DataFrame and metadata to cache with atomic writes."""
+        temp_cache_file = self.cache_file.with_suffix('.tmp')
+        temp_info_file = self.cache_info_file.with_suffix('.tmp')
+        
         try:
-            with open(self.cache_file, 'wb') as f:
+            # Write to temporary files first
+            with open(temp_cache_file, 'wb') as f:
                 pickle.dump(data, f)
             
             cache_info = {
@@ -66,11 +76,20 @@ class ITRProcessor:
                 'cached_at': time.time(),
                 'record_count': len(data)
             }
-            with open(self.cache_info_file, 'wb') as f:
+            with open(temp_info_file, 'wb') as f:
                 pickle.dump(cache_info, f)
+            
+            # Atomic rename - both files are ready
+            temp_cache_file.rename(self.cache_file)
+            temp_info_file.rename(self.cache_info_file)
             
             print(f"✅ Cached {len(data)} records for faster future access")
         except Exception as e:
+            # Clean up temporary files if they exist
+            if temp_cache_file.exists():
+                temp_cache_file.unlink()
+            if temp_info_file.exists():
+                temp_info_file.unlink()
             print(f"⚠️ Failed to save cache: {e}")
     
     def _load_from_cache(self) -> Optional[pd.DataFrame]:
@@ -108,29 +127,83 @@ class ITRProcessor:
             print(f"📊 Loading Excel file: {self.excel_file}...")
             start_time = time.time()
             
-            required_columns = ["SubSystem", "ITR", "End Cert.", "SubSystem Descr."]
+            # Core required columns (must exist)
+            core_required_columns = ["System", "System Descr.", "SubSystem", "ITR", "End Cert.", "SubSystem Descr."]
+            
+            # New deduplication columns (optional for backward compatibility)
+            dedup_columns = ["ITEM", "Rule", "Test", "Form"]
+            
+            # Check available columns and determine what to load
+            all_columns = pd.read_excel(self.excel_file, nrows=0, engine="openpyxl").columns.tolist()
+            
+            # Check for missing core columns
+            missing_core_columns = [col for col in core_required_columns if col not in all_columns]
+            if missing_core_columns:
+                raise ValueError(f"Missing required columns: {missing_core_columns}. Available columns: {all_columns}")
+            
+            # Determine which dedup columns are available
+            available_dedup_columns = [col for col in dedup_columns if col in all_columns]
+            has_dedup_columns = len(available_dedup_columns) > 0
+            
+            # Combine columns to load
+            columns_to_load = core_required_columns + available_dedup_columns
+            
+            # Build dtype specification
+            dtype_spec = {
+                "System": "string",
+                "System Descr.": "string",
+                "SubSystem": "string",
+                "ITR": "string", 
+                "End Cert.": "string",
+                "SubSystem Descr.": "string"
+            }
+            
+            # Add dtype for available dedup columns
+            for col in available_dedup_columns:
+                dtype_spec[col] = "string"
             
             df = pd.read_excel(
                 self.excel_file,
-                usecols=required_columns,
-                dtype={
-                    "SubSystem": "string",
-                    "ITR": "string", 
-                    "End Cert.": "string",
-                    "SubSystem Descr.": "string"
-                },
+                usecols=columns_to_load,
+                dtype=dtype_spec,
                 engine="openpyxl",
                 na_filter=True,
             )
             
             load_time = time.time() - start_time
             
-            # Data cleaning
+            # Data cleaning - handle NaN values before string conversion
+            df["System Descr."] = df["System Descr."].fillna("")
+            df["End Cert."] = df["End Cert."].fillna("")
+            df["SubSystem Descr."] = df["SubSystem Descr."].fillna("")
+            
+            # Clean deduplication columns if they exist
+            for col in available_dedup_columns:
+                df[col] = df[col].fillna("")
+            
+            # Convert to strings and strip whitespace
+            df["System"] = df["System"].astype(str).str.strip()
+            df["System Descr."] = df["System Descr."].astype(str).str.strip()
             df["SubSystem"] = df["SubSystem"].astype(str).str.strip()
             df["ITR"] = df["ITR"].astype(str).str.strip()
-            df["End Cert."] = df["End Cert."].fillna("").astype(str).str.strip()
-            df["SubSystem Descr."] = df["SubSystem Descr."].fillna("").astype(str).str.strip()
-            df = df.dropna(subset=["SubSystem", "ITR"], how="all")
+            df["End Cert."] = df["End Cert."].astype(str).str.strip()
+            df["SubSystem Descr."] = df["SubSystem Descr."].astype(str).str.strip()
+            
+            # Clean deduplication columns
+            for col in available_dedup_columns:
+                df[col] = df[col].astype(str).str.strip()
+            
+            # Remove rows with missing essential data
+            df = df.dropna(subset=["System", "SubSystem", "ITR"], how="any")
+            
+            # Apply deduplication if we have the required columns
+            if has_dedup_columns and len(available_dedup_columns) == 4:
+                original_count = len(df)
+                df = self._deduplicate_data(df)
+                dedup_count = len(df)
+                print(f"🔍 Deduplication: {original_count} → {dedup_count} records ({original_count - dedup_count} duplicates removed)")
+            elif has_dedup_columns:
+                print(f"⚠️  Partial deduplication columns found ({available_dedup_columns}). Need all 4 columns (ITEM, Rule, Test, Form) for deduplication.")
             
             self.data = df
             print(f"✅ Loaded {len(self.data)} ITR records in {load_time:.2f}s")
@@ -138,18 +211,57 @@ class ITRProcessor:
             
         except Exception as e:
             print(f"❌ Error loading Excel file: {e}")
+            # Try fallback to test data
+            test_file = "test_pcos.xlsx"
+            if Path(test_file).exists():
+                print(f"🔄 Falling back to test data: {test_file}")
+                try:
+                    self.excel_file = test_file
+                    self._load_data()
+                    return
+                except Exception as test_error:
+                    print(f"❌ Test data also failed: {test_error}")
+            else:
+                print(f"❌ Test data file not found: {test_file}")
+            
             self.data = pd.DataFrame()
     
-    def get_itr_status(self, end_cert_value: str) -> str:
+    def get_itr_status(self, end_cert_value) -> str:
         """Determine ITR status from End Cert. value."""
-        if not end_cert_value or end_cert_value.strip() == "":
-            return "not_started"
-        elif end_cert_value.upper() == "N":
-            return "ongoing"
-        elif end_cert_value.upper() == "Y":
-            return "completed"
+        if end_cert_value is None or not str(end_cert_value).strip() or str(end_cert_value).strip().lower() in ["", "nan", "none"]:
+            return "Not Started"
+        elif str(end_cert_value).strip().upper() == "N":
+            return "Ongoing"
+        elif str(end_cert_value).strip().upper() == "Y":
+            return "Completed"
         else:
-            return "unknown"
+            return "Unknown"
+    
+    def _create_composite_key(self, row) -> str:
+        """Create composite key from ITEM+Rule+Test+Form fields."""
+        item = str(row.get("ITEM", "")).strip() if pd.notna(row.get("ITEM", "")) else ""
+        rule = str(row.get("Rule", "")).strip() if pd.notna(row.get("Rule", "")) else ""
+        test = str(row.get("Test", "")).strip() if pd.notna(row.get("Test", "")) else ""
+        form = str(row.get("Form", "")).strip() if pd.notna(row.get("Form", "")) else ""
+        
+        return f"{item}|{rule}|{test}|{form}"
+    
+    def _deduplicate_data(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Remove duplicate rows based on composite key of ITEM+Rule+Test+Form."""
+        if data.empty:
+            return data
+        
+        # Create composite key for each row
+        data = data.copy()
+        data["_composite_key"] = data.apply(self._create_composite_key, axis=1)
+        
+        # Keep first occurrence of each unique key
+        deduplicated = data.drop_duplicates(subset=["_composite_key"], keep="first")
+        
+        # Remove the temporary composite key column
+        deduplicated = deduplicated.drop(columns=["_composite_key"])
+        
+        return deduplicated.reset_index(drop=True)
     
     def get_subsystem_data(self, subsystem: str) -> Dict:
         """
@@ -174,32 +286,32 @@ class ITRProcessor:
         
         # Calculate overall statistics
         total_itrs = len(subsystem_data)
-        status_counts = {"not_started": 0, "ongoing": 0, "completed": 0}
+        status_counts = {"Not Started": 0, "Ongoing": 0, "Completed": 0, "Unknown": 0}
         
         for _, row in subsystem_data.iterrows():
             status = self.get_itr_status(row["End Cert."])
             status_counts[status] += 1
         
-        open_itrs = status_counts["not_started"] + status_counts["ongoing"]
+        open_itrs = status_counts["Not Started"] + status_counts["Ongoing"]
         
         # Calculate by-type breakdown
         by_type = {}
         for itr_type in ["ITR-A", "ITR-B", "ITR-C"]:
             type_data = subsystem_data[subsystem_data["ITR"] == itr_type]
-            type_status_counts = {"not_started": 0, "ongoing": 0, "completed": 0}
+            type_status_counts = {"Not Started": 0, "Ongoing": 0, "Completed": 0, "Unknown": 0}
             
             for _, row in type_data.iterrows():
                 status = self.get_itr_status(row["End Cert."])
                 type_status_counts[status] += 1
             
-            type_open = type_status_counts["not_started"] + type_status_counts["ongoing"]
+            type_open = type_status_counts["Not Started"] + type_status_counts["Ongoing"]
             
             by_type[itr_type] = {
                 "total": len(type_data),
                 "open": type_open,
-                "completed": type_status_counts["completed"],
-                "not_started": type_status_counts["not_started"],
-                "ongoing": type_status_counts["ongoing"]
+                "completed": type_status_counts["Completed"],
+                "not_started": type_status_counts["Not Started"],
+                "ongoing": type_status_counts["Ongoing"]
             }
         
         # Create comprehensive response
@@ -208,12 +320,12 @@ class ITRProcessor:
             "overall": {
                 "total": total_itrs,
                 "open": open_itrs,
-                "completed": status_counts["completed"],
-                "not_started": status_counts["not_started"],
-                "ongoing": status_counts["ongoing"]
+                "completed": status_counts["Completed"],
+                "not_started": status_counts["Not Started"],
+                "ongoing": status_counts["Ongoing"]
             },
             "by_type": by_type,
-            "completion_rate": round(status_counts["completed"] / total_itrs * 100, 1) if total_itrs > 0 else 0,
+            "completion_rate": round(status_counts["Completed"] / total_itrs * 100, 1) if total_itrs > 0 else 0,
             "guidance": self._generate_guidance(subsystem, total_itrs, open_itrs, by_type)
         }
         
@@ -241,7 +353,7 @@ class ITRProcessor:
         
         return ". ".join(suggestions)
     
-    def search_subsystems(self, pattern: str = None, limit: int = 20) -> Dict:
+    def search_subsystems(self, pattern: str = None) -> Dict:
         """
         Smart subsystem discovery and search with description support.
         Searches both subsystem IDs and descriptions for comprehensive results.
@@ -266,23 +378,27 @@ class ITRProcessor:
                 description = str(row['SubSystem Descr.']) if pd.notna(row['SubSystem Descr.']) else ""
                 
                 # Search in both ID and description
-                if (pattern_lower in subsystem_id.lower() or 
-                    pattern_lower in description.lower()):
+                id_match = pattern_lower in subsystem_id.lower()
+                desc_match = pattern_lower in description.lower()
+                
+                if id_match or desc_match:
+                    # Determine match type - prefer ID match if both match
+                    match_type = "id" if id_match else "description"
+                    if id_match and desc_match:
+                        match_type = "both"
+                    
                     matching_subsystems.append({
                         "id": subsystem_id,
                         "description": description,
-                        "match_type": "id" if pattern_lower in subsystem_id.lower() else "description"
+                        "match_type": match_type
                     })
             
             result = {
                 "pattern": pattern,
                 "found": len(matching_subsystems),
                 "total_available": len(all_subsystems),
-                "matches": matching_subsystems[:limit]
+                "matches": matching_subsystems
             }
-            
-            if len(matching_subsystems) > limit:
-                result["truncated"] = f"Showing first {limit} of {len(matching_subsystems)} matches"
             
             if matching_subsystems:
                 id_matches = sum(1 for m in matching_subsystems if m["match_type"] == "id")
@@ -292,22 +408,100 @@ class ITRProcessor:
                 result["guidance"] = f"No subsystems found matching '{pattern}' in either ID or description. Try a different pattern"
             
         else:
-            # Return overview of all subsystems with sample descriptions
-            sample_with_desc = []
-            for _, row in unique_subsystems.head(limit).iterrows():
-                sample_with_desc.append({
+            # Return overview of all subsystems with descriptions
+            all_with_desc = []
+            for _, row in unique_subsystems.iterrows():
+                all_with_desc.append({
                     "id": row['SubSystem'],
                     "description": str(row['SubSystem Descr.']) if pd.notna(row['SubSystem Descr.']) else "No description"
                 })
             
             result = {
                 "total_subsystems": len(all_subsystems),
-                "sample": sample_with_desc,
+                "subsystems": all_with_desc,
                 "guidance": f"Found {len(all_subsystems)} total subsystems. Use search pattern to find by ID or description, or query_subsystem_itrs() for specific subsystem details"
             }
+        
+        return result
+    
+    def search_systems(self, pattern: str = None) -> Dict:
+        """
+        Smart system discovery and search with description support.
+        Searches both system IDs and descriptions and returns connected subsystems.
+        """
+        if self.data is None or self.data.empty:
+            return {
+                "error": "No data loaded",
+                "guidance": "Try reloading data with manage_cache tool"
+            }
+        
+        # Get unique systems with their descriptions and connected subsystems
+        unique_systems = self.data.groupby('System').agg({
+            'System Descr.': 'first',
+            'SubSystem': list
+        }).reset_index()
+        
+        all_systems = sorted(unique_systems['System'].tolist())
+        
+        if pattern:
+            # Case-insensitive partial matching on both ID and description
+            pattern_lower = pattern.lower()
+            matching_systems = []
             
-            if len(all_subsystems) > limit:
-                result["truncated"] = f"Showing first {limit} of {len(all_subsystems)} subsystems"
+            for _, row in unique_systems.iterrows():
+                system_id = row['System']
+                description = str(row['System Descr.']) if pd.notna(row['System Descr.']) else ""
+                subsystems = sorted(list(set(row['SubSystem'])))  # Remove duplicates and sort
+                
+                # Search in both ID and description
+                id_match = pattern_lower in system_id.lower()
+                desc_match = pattern_lower in description.lower()
+                
+                if id_match or desc_match:
+                    # Determine match type
+                    match_type = "id" if id_match else "description"
+                    if id_match and desc_match:
+                        match_type = "both"
+                    
+                    matching_systems.append({
+                        "id": system_id,
+                        "description": description,
+                        "subsystems": subsystems,
+                        "total_subsystems": len(subsystems),
+                        "match_type": match_type
+                    })
+            
+            result = {
+                "pattern": pattern,
+                "found": len(matching_systems),
+                "total_available": len(all_systems),
+                "matches": matching_systems
+            }
+            
+            if matching_systems:
+                id_matches = sum(1 for m in matching_systems if m["match_type"] in ["id", "both"])
+                desc_matches = sum(1 for m in matching_systems if m["match_type"] in ["description", "both"])
+                result["guidance"] = f"Found {len(matching_systems)} systems matching '{pattern}' ({id_matches} by ID, {desc_matches} by description). Use query_subsystem_itrs() to get ITR details for any subsystem"
+            else:
+                result["guidance"] = f"No systems found matching '{pattern}' in either ID or description. Try a different pattern"
+            
+        else:
+            # Return overview of all systems with their subsystems
+            all_with_desc = []
+            for _, row in unique_systems.iterrows():
+                subsystems = sorted(list(set(row['SubSystem'])))  # Remove duplicates and sort
+                all_with_desc.append({
+                    "id": row['System'],
+                    "description": str(row['System Descr.']) if pd.notna(row['System Descr.']) else "No description",
+                    "subsystems": subsystems,
+                    "total_subsystems": len(subsystems)
+                })
+            
+            result = {
+                "total_systems": len(all_systems),
+                "systems": all_with_desc,
+                "guidance": f"Found {len(all_systems)} total systems. Use search pattern to find by ID or description, or query_subsystem_itrs() for specific subsystem details"
+            }
         
         return result
     
@@ -377,14 +571,18 @@ class ITRProcessor:
             }
 
 
-# Global instance
+# Global instance with thread safety
 _processor = None
+_processor_lock = threading.Lock()
 
 def get_processor() -> ITRProcessor:
-    """Get the global processor instance."""
+    """Get the global processor instance with thread safety."""
     global _processor
     if _processor is None:
-        _processor = ITRProcessor()
+        with _processor_lock:
+            # Double-check pattern to avoid race condition
+            if _processor is None:
+                _processor = ITRProcessor()
     return _processor
 
 
@@ -462,15 +660,13 @@ def search_subsystems(pattern: str = None) -> str:
                     # Backward compatibility for old format
                     response += f"• {match}\n"
             
-            if result.get('truncated'):
-                response += f"\n⚠️ {result['truncated']}"
         
     else:
         response = f"📊 Subsystem Overview:\n"
         response += f"Total Available: {result['total_subsystems']}\n\n"
-        response += "📋 Sample Subsystems:\n"
+        response += "📋 All Subsystems:\n"
         
-        for item in result['sample']:
+        for item in result['subsystems']:
             if isinstance(item, dict):
                 response += f"• {item['id']}\n"
                 if item['description'] and item['description'] != "No description":
@@ -478,9 +674,61 @@ def search_subsystems(pattern: str = None) -> str:
             else:
                 # Backward compatibility for old format
                 response += f"• {item}\n"
+    
+    response += f"\n💡 {result['guidance']}"
+    
+    return response
+
+
+@tool
+def search_systems(pattern: str = None) -> str:
+    """
+    Find systems by ID pattern or description content. Use when user wants to find systems
+    containing specific text in either the system ID or description. Returns system info
+    with connected subsystem IDs.
+    
+    Returns matching system IDs with descriptions, connected subsystems, and guidance for next steps.
+    
+    Args:
+        pattern: Optional pattern for filtering by ID or description (e.g., "7-1100", "pump", "valve"). Leave empty to see all available systems.
+    """
+    processor = get_processor()
+    result = processor.search_systems(pattern)
+    
+    if "error" in result:
+        return f"❌ Error: {result['error']}\n💡 {result['guidance']}"
+    
+    if pattern:
+        response = f"🔍 System Search Results for '{result['pattern']}':\n"
+        response += f"Found {result['found']} of {result['total_available']} systems\n\n"
         
-        if result.get('truncated'):
-            response += f"\n⚠️ {result['truncated']}"
+        if result.get('matches'):
+            response += "📋 Matching Systems:\n"
+            for match in result['matches']:
+                if isinstance(match, dict):
+                    match_indicator = {"id": "🆔", "description": "📝", "both": "🔗"}.get(match['match_type'], "🔍")
+                    response += f"• {match_indicator} {match['id']}\n"
+                    if match['description']:
+                        response += f"   Description: {match['description']}\n"
+                    response += f"   Connected SubSystems ({match['total_subsystems']}): {', '.join(match['subsystems'])}\n"
+                else:
+                    # Backward compatibility for old format
+                    response += f"• {match}\n"
+        
+    else:
+        response = f"📊 System Overview:\n"
+        response += f"Total Available: {result['total_systems']}\n\n"
+        response += "📋 All Systems:\n"
+        
+        for item in result['systems']:
+            if isinstance(item, dict):
+                response += f"• {item['id']}\n"
+                if item['description'] and item['description'] != "No description":
+                    response += f"   Description: {item['description']}\n"
+                response += f"   Connected SubSystems ({item['total_subsystems']}): {', '.join(item['subsystems'])}\n"
+            else:
+                # Backward compatibility for old format
+                response += f"• {item}\n"
     
     response += f"\n💡 {result['guidance']}"
     
